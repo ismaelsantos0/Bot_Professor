@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -22,15 +22,53 @@ def get_conn():
     return psycopg2.connect(DB_URL)
 
 # =========================
-# COMANDO /start
+# MENU
 # =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot de estudos FCC online!\nUse /questao para começar.")
+def get_menu():
+    keyboard = [
+        ["📚 Nova Questão"],
+        ["❌ Sair"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # =========================
-# COMANDO /questao
+# LIMPAR MENSAGENS
+# =========================
+async def limpar(update, context):
+    try:
+        chat_id = update.effective_chat.id
+        msgs = context.user_data.get("last_messages", [])
+
+        for msg_id in msgs:
+            try:
+                await context.bot.delete_message(chat_id, msg_id)
+            except:
+                pass
+
+        context.user_data["last_messages"] = []
+
+    except Exception as e:
+        print("Erro ao limpar:", e)
+
+# =========================
+# START
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await limpar(update, context)
+
+    msg = await update.message.reply_text(
+        "🤖 Bot de estudos FCC pronto!\nEscolha uma opção:",
+        reply_markup=get_menu()
+    )
+
+    context.user_data["last_messages"] = [msg.message_id]
+
+# =========================
+# QUESTÃO
 # =========================
 async def questao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await limpar(update, context)
+
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -39,7 +77,8 @@ async def questao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = cur.fetchone()
 
         if not q:
-            await update.message.reply_text("⚠️ Nenhuma questão no banco ainda.")
+            msg = await update.message.reply_text("⚠️ Nenhuma questão no banco.")
+            context.user_data["last_messages"] = [msg.message_id]
             return
 
         context.user_data["questao"] = q
@@ -54,31 +93,44 @@ B) {q[4]}
 C) {q[5]}
 D) {q[6]}
 """
-        await update.message.reply_text(texto)
+
+        msg = await update.message.reply_text(texto)
+
+        context.user_data["last_messages"] = [msg.message_id]
 
         cur.close()
         conn.close()
 
     except Exception as e:
         print("ERRO QUESTAO:", e)
-        await update.message.reply_text("❌ Erro ao buscar questão.")
+        msg = await update.message.reply_text("❌ Erro ao buscar questão.")
+        context.user_data["last_messages"] = [msg.message_id]
 
 # =========================
-# RESPOSTA DO USUÁRIO
+# RESPOSTA
 # =========================
 async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto_user = update.message.text.strip()
+
+    # MENU
+    if texto_user == "📚 Nova Questão":
+        return await questao(update, context)
+
+    if texto_user == "❌ Sair":
+        return await start(update, context)
+
+    resposta = texto_user.upper()
+    q = context.user_data.get("questao")
+
+    if not q:
+        msg = await update.message.reply_text("Use o menu.")
+        context.user_data["last_messages"] = [msg.message_id]
+        return
+
+    correta = q[7]
+    acertou = resposta == correta
+
     try:
-        resposta = update.message.text.strip().upper()
-        q = context.user_data.get("questao")
-
-        if not q:
-            await update.message.reply_text("Use /questao primeiro.")
-            return
-
-        correta = q[7]
-
-        acertou = resposta == correta
-
         conn = get_conn()
         cur = conn.cursor()
 
@@ -91,14 +143,18 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close()
         conn.close()
 
-        if acertou:
-            await update.message.reply_text("✅ Acertou!")
-        else:
-            await update.message.reply_text(f"❌ Errou! Resposta correta: {correta}")
-
     except Exception as e:
-        print("ERRO RESPOSTA:", e)
-        await update.message.reply_text("❌ Erro ao processar resposta.")
+        print("ERRO DB:", e)
+
+    if acertou:
+        texto = "✅ Acertou!"
+    else:
+        texto = f"❌ Errou! Resposta correta: {correta}"
+
+    msg = await update.message.reply_text(texto)
+
+    # salva pra apagar depois
+    context.user_data["last_messages"].append(msg.message_id)
 
 # =========================
 # ERROS GERAIS
