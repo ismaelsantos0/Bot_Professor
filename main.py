@@ -12,13 +12,12 @@ from telegram.ext import (
 )
 
 # =========================
-# CONFIGURAÇÕES (Railway Env Vars)
+# CONFIGURAÇÕES
 # =========================
 TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Configuração da IA
 genai.configure(api_key=GEMINI_API_KEY)
 modelo_gemini = genai.GenerativeModel('gemini-2.5-flash')
 
@@ -55,7 +54,7 @@ edital_ale_rr = {
 }
 
 # =========================
-# FUNÇÕES DE BANCO E IA
+# FUNÇÕES AUXILIARES
 # =========================
 def get_conn():
     return psycopg2.connect(DB_URL)
@@ -63,7 +62,11 @@ def get_conn():
 async def pedir_ao_gemini(prompt: str) -> str:
     try:
         resposta = await modelo_gemini.generate_content_async(prompt)
-        return resposta.text
+        texto = resposta.text
+        # Trava de segurança para o Telegram não recusar mensagens gigantes
+        if len(texto) > 4000:
+            texto = texto[:3900] + "\n\n[⚠️ Texto reduzido para caber no limite do Telegram]"
+        return texto
     except Exception as e:
         print(f"Erro no Gemini: {e}")
         return "❌ Ops! Meu cérebro de IA deu uma travada. Tente novamente."
@@ -82,14 +85,13 @@ async def limpar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # COMANDOS DIRETOS
 # =========================
 async def cmd_estudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gera uma aula rápida sobre um assunto específico digitado pelo usuário."""
     assunto_solicitado = " ".join(context.args)
     
     if not assunto_solicitado:
         await update.message.reply_text("⚠️ Uso correto: `/estudar [assunto]`\nExemplo: `/estudar crase`", parse_mode="Markdown")
         return
 
-    msg_loading = await update.message.reply_text(f"⏳ *Buscando no edital e preparando material sobre: {assunto_solicitado}...*", parse_mode="Markdown")
+    msg_loading = await update.message.reply_text(f"⏳ *Preparando material sobre: {assunto_solicitado}...*", parse_mode="Markdown")
 
     prompt = f"""
     Você é um professor especialista na banca FCC. Seu aluno está focado no edital da ALE-RR, Cargo 38 (Assistente Legislativo).
@@ -98,7 +100,8 @@ async def cmd_estudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     2. Dê uma explicação teórica direta, com foco em como a banca FCC cobra isso.
     3. Mostre as 'pegadinhas' mais comuns da FCC.
     4. Dê um exemplo prático.
-    Seja claro, didático e use formatação compatível com Telegram (emojis e negrito).
+    CRÍTICO: Sua explicação deve ter no máximo 3500 caracteres. Seja conciso.
+    Formate o texto para o aplicativo Telegram (use emojis e negrito).
     """
     
     aula_texto = await pedir_ao_gemini(prompt)
@@ -107,7 +110,6 @@ async def cmd_estudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📚 *Aula Rápida*\n\n{aula_texto}", parse_mode="Markdown")
 
 async def cmd_explicar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Explica uma questão específica buscando pelo ID."""
     if not context.args:
         await update.message.reply_text("⚠️ Uso correto: `/explicar [ID da questão]`\nExemplo: `/explicar 15`", parse_mode="Markdown")
         return
@@ -136,8 +138,9 @@ async def cmd_explicar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt = f"""
         Sou um aluno estudando para a ALE-RR (nível médio, banca FCC). 
         A questão de {q_data[0]} era: "{q_data[2]}".
-        O gabarito oficial diz que a alternativa correta é a "{q_data[3]}".
-        Explique de forma direta o porquê dessa ser a correta e qual é a 'pegadinha' da FCC aqui.
+        O gabarito oficial diz que a correta é a "{q_data[3]}".
+        Explique de forma direta o porquê dessa ser a correta e qual é a 'pegadinha' da FCC.
+        CRÍTICO: Sua explicação deve ter no máximo 3500 caracteres. Seja conciso.
         """
         explicacao = await pedir_ao_gemini(prompt)
         
@@ -225,7 +228,6 @@ async def processar_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg_loading = await context.bot.send_message(chat_id, f"⏳ *O professor IA está separando um tópico de {materia_foco}...*", parse_mode="Markdown")
         context.user_data.setdefault("last_messages", []).append(msg_loading.message_id)
 
-        # Sorteia um assunto garantido do edital
         assunto_sorteado = random.choice(edital_ale_rr[materia_foco])
 
         prompt = f"""
@@ -236,13 +238,14 @@ async def processar_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE)
         2. Dê uma explicação teórica direta, com foco em como a banca FCC cobra isso.
         3. Mostre as 'pegadinhas' mais comuns da banca.
         4. Dê um exemplo de como a questão aparece na prova.
+        CRÍTICO: Sua explicação deve ter no máximo 3500 caracteres. Seja conciso e direto ao ponto.
         Formate o texto para o aplicativo Telegram (use emojis, negrito nas palavras-chave e parágrafos curtos).
         """
         
         aula_texto = await pedir_ao_gemini(prompt)
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Gerar outro assunto desta matéria", callback_data=f"aula_{materia_foco}")],
+            [InlineKeyboardButton("🔄 Gerar outro assunto", callback_data=f"aula_{materia_foco}")],
             [InlineKeyboardButton("📝 Fazer Questões", callback_data="nova_questao")],
             [InlineKeyboardButton("⬅️ Menu de Matérias", callback_data="iniciar_estudos")]
         ]
@@ -348,6 +351,7 @@ async def processar_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE)
             A questão que acabei de fazer era: "{q_data[0]}".
             A resposta correta é a alternativa "{q_data[1]}".
             Explique de forma direta o porquê dessa ser a correta e qual é a 'pegadinha' ou regra usada pela FCC aqui.
+            CRÍTICO: Sua explicação deve ter no máximo 3500 caracteres. Seja conciso.
             """
             explicacao = await pedir_ao_gemini(prompt)
         else:
